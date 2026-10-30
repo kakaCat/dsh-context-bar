@@ -1122,6 +1122,7 @@ const CSS = `
       formatTokens,
       attachmentFileUrl,
       shortAttachmentId,
+      LOCALES,
     }
   },
 })

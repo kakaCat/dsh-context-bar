@@ -149,3 +149,9 @@ test('shortAttachmentId renders a digest and refuses path-like ids', () => {
   assert.equal(mod.shortAttachmentId({ attachmentId: '../../secret' }), '')
   assert.equal(mod.shortAttachmentId({}), '')
 })
+
+test('zh and en locale key sets match', () => {
+  const mod = loadModule()
+  assert.deepEqual(Object.keys(mod.LOCALES.zh).sort(), Object.keys(mod.LOCALES.en).sort())
+  assert.deepEqual(Object.keys(mod.LOCALES.zh.roles).sort(), Object.keys(mod.LOCALES.en.roles).sort())
+})

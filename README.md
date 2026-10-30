@@ -149,7 +149,7 @@ node --test        # 42 个单元测试（投影、路由、内容抽取、客�
 
 ## 贡献
 
-欢迎 issue 与 PR。提交前请确保 `node --check client.js && node --check index.js` 与 `node --test` 通过；CI 会在 Node 22 上跑同样两条命令。
+欢迎 issue 与 PR。提交前请确保 `node --check client.js && node --check index.js` 与 `node --test` 通过；CI 会在 Node 22 上跑同样两条命令。变更记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## License
 
