@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { attachmentPath, toolContent, toolGroup } from '../index.js'
+import { isAttachmentId, toolContent, toolGroup } from '../index.js'
 
 const tool = (name, description = '') => ({
   name,
@@ -35,8 +35,9 @@ test('toolGroup folds core prefixes into builtin', () => {
   assert.equal(toolGroup('dsh_browser_open'), 'dsh_browser')
 })
 
-test('attachmentPath maps sha256 ids into the object store', () => {
-  const id = `sha256:${'ab'.repeat(32)}`
-  const path = attachmentPath(id)
-  assert.match(path, /attachments\/v1\/objects\/ab\/abab/)
+test('attachment ids are opaque storage identifiers, never filesystem paths', () => {
+  assert.equal(isAttachmentId(`sha256:${'ab'.repeat(32)}`), true)
+  for (const value of ['', '/etc/passwd', '../x', 'sha256:../../etc/passwd', 'a b', null, 3]) {
+    assert.equal(isAttachmentId(value), false, JSON.stringify(value))
+  }
 })

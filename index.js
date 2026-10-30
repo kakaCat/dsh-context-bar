@@ -1,17 +1,19 @@
 /** Host half: detailed context-composition projection.
  *
  * Folds the same durable surface events as the token-meter's 3-bucket
- * `contextBreakdown`, but keeps Claude Code v2-style categories:
+ * `contextBreakdown`, but keeps Claude Code-style categories:
  * system prompt, system tools, MCP tools (`mcp__*` schemas), message text,
  * and file/image attachments. Heuristic prices mirror the token-meter's
  * fixed density estimator (chars/4 + block overheads), so figures are
  * display estimates, never billing data. No LLM calls, no polling: the
  * session-projection drive folds every committed event once.
+ *
+ * Attachment previews read through the `attachments` service (the durable,
+ * content-addressed store) and never touch a filesystem path from a session
+ * event, so a crafted event cannot turn the preview route into a file reader.
  */
 
-import { readFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
-import { extname, join } from 'node:path'
+import { extname } from 'node:path'
 
 export const inject = ['sessionProjections']
 
@@ -111,7 +113,9 @@ export function messageText(message) {
     else if (block?.type === 'image') parts.push('[image]')
     else if (block?.type === 'file') {
       const file = block.attachment ?? {}
-      parts.push(`[file] ${String(file.path ?? file.name ?? file.mimeType ?? '')}`)
+      // FileAttachmentRef is content-addressed: `name` is the display label,
+      // never a filesystem path.
+      parts.push(`[file] ${String(file.name ?? file.mimeType ?? '')}`)
     }
   }
   return parts.join('\n').trim()
@@ -208,7 +212,8 @@ export function recentMessages(events) {
   return items.reverse()
 }
 
-export function attachmentItems(events) {
+/** Every durable image/file block in the session log, in event order. */
+function allAttachmentItems(events) {
   const items = []
   for (const event of events) {
     for (const block of eventMessage(event)?.content ?? []) {
@@ -226,27 +231,24 @@ export function attachmentItems(events) {
         })
       } else if (block?.type === 'file') {
         const file = block.attachment ?? {}
+        // FileAttachmentRef carries only attachmentId/name/bytes; the MIME
+        // type is derived from the sanitized display filename.
         items.push({
           kind: 'file',
           tokens: estimateStructuralBlock(block),
-          name: String(file.name ?? file.path?.split('/').pop() ?? 'file'),
-          path: String(file.path ?? ''),
-          mimeType: String(file.mimeType ?? ''),
+          name: String(file.name ?? 'file'),
+          mimeType: mimeOf(file.name),
           bytes: Number(file.bytes ?? 0),
           attachmentId: String(file.attachmentId ?? ''),
         })
       }
     }
   }
-  return items.slice(-60).map((item, index) => ({ ...item, index }))
+  return items
 }
 
-/** Resolve one attachment object to its bytes on disk (content-addressed sha256). */
-export function attachmentPath(attachmentId) {
-  const hex = String(attachmentId).replace(/^sha256:/, '')
-  if (!/^[0-9a-f]{64}$/i.test(hex)) return undefined
-  const home = process.env.DSH_HOME ?? join(homedir(), '.dsh')
-  return join(home, 'attachments', 'v1', 'objects', hex.slice(0, 2), hex)
+export function attachmentItems(events) {
+  return allAttachmentItems(events).slice(-60).map((item, index) => ({ ...item, index }))
 }
 
 const TEXT_EXTENSIONS = new Set([
@@ -268,46 +270,130 @@ function mimeOf(name) {
 }
 
 const MAX_PREVIEW_BYTES = 12 * 1024 * 1024
+const MAX_ATTACHMENT_ID_LENGTH = 200
 
-export async function readAttachmentContent(item) {
-  const path = item.path ? item.path : attachmentPath(item.attachmentId)
-  if (path === undefined || path === '') return { ok: false, error: 'no-attachment-path' }
-  let buffer
-  try {
-    buffer = await readFile(path)
-  } catch (error) {
-    return { ok: false, error: `read-failed: ${error?.code ?? error}` }
+/** Attachment ids are opaque storage identifiers; only ids seen in the session are read. */
+export function isAttachmentId(value) {
+  return typeof value === 'string'
+    && value.length > 0
+    && value.length <= MAX_ATTACHMENT_ID_LENGTH
+    && /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value)
+}
+
+const decoded = (buffer, name) => Buffer.from(buffer).toString(name)
+
+/** Read one verbatim stored file through the attachment store, bounded by the preview limit. */
+async function readStoredFile(attachments, ref, signal) {
+  const chunks = []
+  let total = 0
+  for await (const chunk of attachments.readFileStream(ref, signal)) {
+    total += chunk.byteLength
+    if (total > MAX_PREVIEW_BYTES) return { ok: false, error: 'attachment-too-large' }
+    chunks.push(chunk)
   }
-  if (buffer.byteLength > MAX_PREVIEW_BYTES) return { ok: false, error: 'too-large' }
-  const mime = item.mimeType !== '' ? item.mimeType : mimeOf(item.name)
+  return { ok: true, buffer: Buffer.concat(chunks, total) }
+}
+
+/**
+ * Resolve one durable attachment to previewable content through the
+ * `attachments` service. The session's own references are the only input;
+ * filesystem paths from events are never followed.
+ */
+export async function readAttachmentContent(item, attachments, signal) {
+  if (!isAttachmentId(item?.attachmentId)) return { ok: false, error: 'attachment-not-found' }
+  if (attachments === undefined || attachments === null) return { ok: false, error: 'attachments-unavailable' }
+  const expectedBytes = Number(item.bytes ?? 0)
+  if (Number.isFinite(expectedBytes) && expectedBytes > MAX_PREVIEW_BYTES) {
+    return { ok: false, error: 'attachment-too-large' }
+  }
   const base = {
     name: item.name,
-    mimeType: mime,
-    bytes: buffer.byteLength,
+    mimeType: item.mimeType ?? '',
+    bytes: expectedBytes,
     width: item.width,
     height: item.height,
   }
-  if (mime.startsWith('image/')) {
-    return { ok: true, kind: 'image', ...base, dataUrl: `data:${mime};base64,${buffer.toString('base64')}` }
+  try {
+    if (item.kind === 'image') {
+      if (typeof attachments.readImage !== 'function') return { ok: false, error: 'attachments-unavailable' }
+      const stored = await attachments.readImage({
+        attachmentId: item.attachmentId,
+        mediaType: item.mimeType,
+        bytes: expectedBytes,
+        width: Number(item.width ?? 0),
+        height: Number(item.height ?? 0),
+        name: item.name,
+      }, signal)
+      const data = stored?.data
+      if (data === undefined) return { ok: false, error: 'attachment-read-failed' }
+      if (data.byteLength > MAX_PREVIEW_BYTES) return { ok: false, error: 'attachment-too-large' }
+      const mime = item.mimeType !== '' ? item.mimeType : String(stored?.ref?.mediaType ?? 'image/png')
+      return {
+        ok: true,
+        kind: 'image',
+        ...base,
+        mimeType: mime,
+        bytes: data.byteLength,
+        dataUrl: `data:${mime};base64,${decoded(data, 'base64')}`,
+      }
+    }
+    if (typeof attachments.readFileStream !== 'function') return { ok: false, error: 'attachments-unavailable' }
+    const ref = { attachmentId: item.attachmentId, name: String(item.name ?? 'file'), bytes: expectedBytes }
+    const read = await readStoredFile(attachments, ref, signal)
+    if (!read.ok) return read
+    const buffer = read.buffer
+    const mime = item.mimeType !== '' && item.mimeType !== undefined ? item.mimeType : mimeOf(item.name)
+    const ext = extname(String(item.name ?? '')).toLowerCase()
+    if (mime.startsWith('image/')) {
+      return {
+        ok: true,
+        kind: 'image',
+        ...base,
+        mimeType: mime,
+        bytes: buffer.byteLength,
+        dataUrl: `data:${mime};base64,${buffer.toString('base64')}`,
+      }
+    }
+    if (mime.startsWith('text/') || TEXT_EXTENSIONS.has(ext) || mime === 'application/json') {
+      return { ok: true, kind: 'text', ...base, mimeType: mime, bytes: buffer.byteLength, text: buffer.toString('utf8') }
+    }
+    return { ok: true, kind: 'binary', ...base, mimeType: mime, bytes: buffer.byteLength }
+  } catch {
+    if (signal?.aborted === true) return { ok: false, error: 'aborted' }
+    return { ok: false, error: 'attachment-read-failed' }
   }
-  const ext = extname(String(item.name)).toLowerCase()
-  if (mime.startsWith('text/') || TEXT_EXTENSIONS.has(ext) || mime === 'application/json') {
-    return { ok: true, kind: 'text', ...base, text: buffer.toString('utf8') }
-  }
-  return { ok: true, kind: 'binary', ...base }
+}
+
+const SKILLS_DEADLINE_MS = 4000
+
+/** Bound skill discovery with the request signal plus a wall-clock deadline. */
+function boundedSignal(signal, timeoutMs) {
+  const timeout = typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(timeoutMs) : undefined
+  if (timeout === undefined) return signal
+  if (signal === undefined || signal === null) return timeout
+  return typeof AbortSignal.any === 'function' ? AbortSignal.any([signal, timeout]) : timeout
 }
 
 /** Skills injected into this workspace, with their full body for inspection. */
-export async function skillsContent(skills, cwd) {
+export async function skillsContent(skills, cwd, options = {}) {
   if (skills?.list === undefined || skills?.get === undefined) return []
-  const summaries = await skills.list({ cwd })
+  const signal = boundedSignal(options.signal, options.timeoutMs ?? SKILLS_DEADLINE_MS)
+  let summaries
+  try {
+    summaries = await skills.list({ cwd, signal })
+  } catch {
+    return []
+  }
+  if (!Array.isArray(summaries)) return []
   const items = []
   for (const summary of summaries.slice(0, 40)) {
+    if (signal?.aborted === true) break
     let content = ''
     try {
-      const full = await skills.get(summary.name, { cwd })
+      const full = await skills.get(summary.name, { cwd, signal })
       content = String(full?.content ?? '')
     } catch {
+      // One unreadable skill must not blank the whole category.
       content = ''
     }
     items.push({
@@ -338,11 +424,12 @@ function contextRoute(getSession, getSkills) {
       const url = new URL(request.url)
       const sessionId = url.searchParams.get('sessionId') ?? ''
       const category = url.searchParams.get('category') ?? ''
+      if (sessionId === '') return jsonResponse({ ok: false, error: 'bad-session-id' }, 400)
       if (!CATEGORIES.has(category)) return jsonResponse({ ok: false, error: 'bad-category' }, 400)
       const session = getSession(sessionId)
       if (session === undefined) return jsonResponse({ ok: false, error: 'session-not-found' }, 404)
-      const events = session.snapshotEvents()
       try {
+        const events = session.snapshotEvents()
         if (category === 'system') {
           return jsonResponse({ ok: true, category, kind: 'text', text: latestSystemPrompt(events) })
         }
@@ -354,19 +441,20 @@ function contextRoute(getSession, getSkills) {
         }
         if (category === 'skills') {
           const cwd = session.header?.cwd
-          const items = await skillsContent(getSkills(), cwd)
+          const items = await skillsContent(getSkills(), cwd, { signal: request.signal })
           return jsonResponse({ ok: true, category, kind: 'skills', skills: items })
         }
         const header = latestHeader(events)
         return jsonResponse({ ok: true, category, kind: 'tools', tools: toolContent(header, category === 'mcpTools') })
-      } catch (error) {
-        return jsonResponse({ ok: false, error: String(error?.message ?? error) }, 500)
+      } catch {
+        // Never echo internal error text (it can carry absolute host paths).
+        return jsonResponse({ ok: false, error: 'context-read-failed' }, 500)
       }
     },
   }
 }
 
-function attachmentRoute(getSession) {
+function attachmentRoute(getSession, getAttachments) {
   return {
     path: '/api/context-bar.file',
     methods: ['GET'],
@@ -374,18 +462,29 @@ function attachmentRoute(getSession) {
     async fetch(request) {
       const url = new URL(request.url)
       const sessionId = url.searchParams.get('sessionId') ?? ''
-      const index = Number(url.searchParams.get('index') ?? '-1')
+      const attachmentId = url.searchParams.get('attachmentId') ?? ''
+      if (sessionId === '') return jsonResponse({ ok: false, error: 'bad-session-id' }, 400)
+      if (!isAttachmentId(attachmentId)) return jsonResponse({ ok: false, error: 'bad-attachment-id' }, 400)
       const session = getSession(sessionId)
       if (session === undefined) return jsonResponse({ ok: false, error: 'session-not-found' }, 404)
-      const items = attachmentItems(session.snapshotEvents())
-      const item = items[index]
-      if (item === undefined) return jsonResponse({ ok: false, error: 'attachment-not-found' }, 404)
+      let item
       try {
-        const result = await readAttachmentContent(item)
-        return jsonResponse({ ok: result.ok, index, ...result }, result.ok ? 200 : 500)
-      } catch (error) {
-        return jsonResponse({ ok: false, error: String(error?.message ?? error) }, 500)
+        // Look up the whole log, not the 60-item display window: the id is the
+        // stable key, so a late event can never shift the preview to another file.
+        item = allAttachmentItems(session.snapshotEvents()).find((entry) => entry.attachmentId === attachmentId)
+      } catch {
+        return jsonResponse({ ok: false, error: 'context-read-failed' }, 500)
       }
+      if (item === undefined) return jsonResponse({ ok: false, error: 'attachment-not-found' }, 404)
+      const result = await readAttachmentContent(item, getAttachments(), request.signal)
+      if (!result.ok) {
+        const status = result.error === 'attachment-too-large' ? 413
+          : result.error === 'attachments-unavailable' ? 501
+            : result.error === 'aborted' ? 499
+              : 502
+        return jsonResponse({ ok: false, error: result.error }, status)
+      }
+      return jsonResponse({ ok: true, ...result })
     },
   }
 }
@@ -465,14 +564,27 @@ function placeSurfaceEvent(state, claim, event, tokens, attachmentTokens) {
 }
 
 const tokenCount = (value) => Number.isInteger(value) && value >= 0
+const seqList = (value) => Array.isArray(value) && value.every((seq) => tokenCount(seq))
 const nodeList = (value) => Array.isArray(value)
   && value.every((node) => tokenCount(node?.seq) && tokenCount(node?.tokens))
+
+function parseClaim(claim) {
+  if (typeof claim !== 'object' || claim === null) throw new Error('contextBreakdownDetailed: bad claim')
+  if (!tokenCount(claim.start) || !tokenCount(claim.end) || !tokenCount(claim.tokens)) {
+    throw new Error('contextBreakdownDetailed: bad claim range')
+  }
+  if (!seqList(claim.systemSeqs) || !seqList(claim.seqs)) {
+    throw new Error('contextBreakdownDetailed: bad claim sequences')
+  }
+  return claim
+}
 
 /** Minimal structural validator; the registry only requires `parse`. */
 function parseState(value) {
   if (typeof value !== 'object' || value === null) throw new Error('contextBreakdownDetailed: state is not an object')
   if (!nodeList(value.systems) || !nodeList(value.attachments)) throw new Error('contextBreakdownDetailed: bad node lists')
   if (!tokenCount(value.surfaceTokens)) throw new Error('contextBreakdownDetailed: bad surface total')
+  if (value.claim !== undefined) parseClaim(value.claim)
   const breakdown = value.breakdown
   if (typeof breakdown !== 'object' || breakdown === null) throw new Error('contextBreakdownDetailed: bad breakdown')
   for (const key of ['systemTokens', 'systemToolsTokens', 'mcpToolsTokens', 'messageTokens', 'attachmentTokens']) {
@@ -545,12 +657,13 @@ export function apply(ctx) {
     if (!connection?.fetch?.register) return
     const getSession = (sessionId) => ctx.get?.('sessions')?.get?.(sessionId)
     const getSkills = () => ctx.get?.('skills')
+    const getAttachments = () => ctx.get?.('attachments')
     uiCtx.effect(
       () => connection.fetch.register(contextRoute(getSession, getSkills)),
       'context-bar/route',
     )
     uiCtx.effect(
-      () => connection.fetch.register(attachmentRoute(getSession)),
+      () => connection.fetch.register(attachmentRoute(getSession, getAttachments)),
       'context-bar/file-route',
     )
   })

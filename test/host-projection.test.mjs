@@ -99,3 +99,29 @@ test('wire view is a plain JSON object', () => {
   ])
   for (const value of Object.values(view)) assert.equal(typeof value, 'number')
 })
+
+const validState = () => ({
+  systems: [{ seq: 1, tokens: 10 }],
+  attachments: [{ seq: 2, tokens: 4 }],
+  surfaceTokens: 14,
+  breakdown: { systemTokens: 10, systemToolsTokens: 0, mcpToolsTokens: 0, messageTokens: 4, attachmentTokens: 4 },
+})
+
+test('state parser accepts a valid state and an armed claim', () => {
+  const parse = def.stateSchema.parse
+  assert.deepEqual(parse(validState()), validState())
+  const claimed = {
+    ...validState(),
+    claim: { start: 1, end: 2, tokens: 14, systemSeqs: [1], seqs: [1, 2] },
+  }
+  assert.deepEqual(parse(claimed), claimed)
+})
+
+test('state parser rejects malformed claims and negative counters', () => {
+  const parse = def.stateSchema.parse
+  assert.throws(() => parse({ ...validState(), claim: {} }))
+  assert.throws(() => parse({ ...validState(), claim: { start: -1, end: 2, tokens: 3, systemSeqs: [], seqs: [] } }))
+  assert.throws(() => parse({ ...validState(), claim: { start: 1, end: 2, tokens: 3, systemSeqs: ['x'], seqs: [] } }))
+  assert.throws(() => parse({ ...validState(), surfaceTokens: -1 }))
+  assert.throws(() => parse({ ...validState(), breakdown: { ...validState().breakdown, messageTokens: -1 } }))
+})

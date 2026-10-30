@@ -25,16 +25,16 @@ test('latest system prompt skips empty rewrites', () => {
   assert.equal(latestSystemPrompt([]), '')
 })
 
-test('messageText labels tool calls and files', () => {
+test('messageText labels tool calls and files by display name, never by path', () => {
   const text = messageText({
     role: 'assistant',
     content: [
       { type: 'text', text: 'hello' },
       { type: 'tool-call', name: 'read_file' },
-      { type: 'file', attachment: { path: '/tmp/a.md' } },
+      { type: 'file', attachment: { name: 'a.md', path: '/tmp/a.md' } },
     ],
   })
-  assert.equal(text, 'hello\n[tool-call] read_file\n[file] /tmp/a.md')
+  assert.equal(text, 'hello\n[tool-call] read_file\n[file] a.md')
 })
 
 test('tools are split by the mcp__ prefix', () => {
@@ -69,21 +69,31 @@ test('recent messages keep chronological order and roles', () => {
   assert.equal(items[0].text, 'hi')
 })
 
-test('attachment items include file paths and image markers', () => {
+test('attachment items expose durable content-addressed refs, not paths', () => {
+  const fileId = `sha256:${'cd'.repeat(32)}`
+  const imageId = `sha256:${'ef'.repeat(32)}`
   const events = [{
     type: 'user/message',
     seq: 1,
     data: {
       role: 'user',
       content: [
-        { type: 'file', attachment: { name: 'spec.md', path: '/tmp/spec.md', mimeType: 'text/markdown' } },
-        { type: 'image', mimeType: 'image/png' },
+        { type: 'file', attachment: { attachmentId: fileId, name: 'spec.md', bytes: 42 } },
+        {
+          type: 'image',
+          attachment: { attachmentId: imageId, mediaType: 'image/png', bytes: 128, width: 4, height: 3 },
+        },
       ],
     },
   }]
   const items = attachmentItems(events)
   assert.equal(JSON.stringify(items.map((item) => item.kind)), JSON.stringify(['file', 'image']))
-  assert.equal(items[0].path, '/tmp/spec.md')
+  assert.equal(items[0].attachmentId, fileId)
+  assert.equal(items[0].mimeType, 'text/markdown')
+  assert.equal(items[0].name, 'spec.md')
+  assert.equal('path' in items[0], false)
+  assert.equal(items[1].attachmentId, imageId)
+  assert.equal(items[1].mimeType, 'image/png')
 })
 
 test('recent messages keep tool calls as structured arguments and name tool results', () => {

@@ -132,3 +132,20 @@ test('token formatting matches Claude Code style', () => {
   assert.equal(mod.formatTokens(120000), '120k')
   assert.equal(mod.formatTokens(1000000), '1M')
 })
+
+test('attachment preview url carries the stable attachment id', () => {
+  const mod = loadModule()
+  const id = `sha256:${'ab'.repeat(32)}`
+  assert.equal(
+    mod.attachmentFileUrl('s 1', id),
+    `/api/context-bar.file?sessionId=s%201&attachmentId=${encodeURIComponent(id)}`,
+  )
+})
+
+test('shortAttachmentId renders a digest and refuses path-like ids', () => {
+  const mod = loadModule()
+  assert.equal(mod.shortAttachmentId({ attachmentId: `sha256:${'ab'.repeat(32)}` }), 'sha256:abababababab…')
+  assert.equal(mod.shortAttachmentId({ attachmentId: '/etc/passwd' }), '')
+  assert.equal(mod.shortAttachmentId({ attachmentId: '../../secret' }), '')
+  assert.equal(mod.shortAttachmentId({}), '')
+})

@@ -38,6 +38,11 @@ const LOCALES = {
     serverGroup: '{name}（server）',
     loading: '正在读取…',
     loadError: '读取失败',
+    tooLarge: '附件超过预览上限（12MB）',
+    unavailable: '附件服务不可用',
+    notFound: '附件不存在',
+    readFailed: '附件读取失败',
+    aborted: '读取已取消',
     retry: '重试',
     empty: '暂无内容',
     parameters: 'parameters',
@@ -74,6 +79,11 @@ const LOCALES = {
     serverGroup: '{name} (server)',
     loading: 'Loading…',
     loadError: 'Failed to load',
+    tooLarge: 'Attachment exceeds the 12MB preview limit',
+    unavailable: 'Attachment service unavailable',
+    notFound: 'Attachment not found',
+    readFailed: 'Failed to read the attachment',
+    aborted: 'Read cancelled',
     retry: 'Retry',
     empty: 'No content',
     parameters: 'parameters',
@@ -100,6 +110,20 @@ function translate(t, key, params) {
   if (typeof t === 'function') return t(key, params)
   const template = LOCALES.zh[key] || key
   return String(template).replace(/\{(\w+)\}/g, (_, name) => String(params?.[name] ?? ''))
+}
+
+/** Map stable Host error codes to localized text; unknown codes pass through. */
+const ERROR_KEYS = {
+  'attachment-too-large': 'tooLarge',
+  'attachments-unavailable': 'unavailable',
+  'attachment-not-found': 'notFound',
+  'attachment-read-failed': 'readFailed',
+  aborted: 'aborted',
+}
+
+function errorText(t, error) {
+  const key = ERROR_KEYS[String(error)]
+  return key === undefined ? String(error) : translate(t, key)
 }
 
 function formatTokens(value) {
@@ -616,6 +640,19 @@ const CSS = `
       return `/api/context-bar.ui?sessionId=${encodeURIComponent(String(sessionId))}&category=${encodeURIComponent(category)}`
     }
 
+    function attachmentFileUrl(sessionId, attachmentId) {
+      return `/api/context-bar.file?sessionId=${encodeURIComponent(String(sessionId))}&attachmentId=${encodeURIComponent(String(attachmentId))}`
+    }
+
+    /** Compact, non-path display form of a content-addressed attachment id. */
+    function shortAttachmentId(item) {
+      const id = String(item?.attachmentId ?? '')
+      const digest = /^sha256:([0-9a-f]+)$/i.exec(id)
+      if (digest !== null) return `sha256:${digest[1].slice(0, 12)}…`
+      if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,200}$/.test(id)) return ''
+      return id.length > 24 ? `${id.slice(0, 24)}…` : id
+    }
+
     /** Message log: roles, content, token estimates; no chat-card chrome. */
     function MessageLog({ data, t }) {
       const messages = data.messages ?? []
@@ -656,18 +693,18 @@ const CSS = `
       const attachments = data.attachments ?? []
       if (attachments.length === 0) return h('div', { className: 'dcb-loading' }, translate(t, 'empty'))
       return h('div', null, attachments.map((item) => h('button', {
-        key: item.index,
+        key: `${item.attachmentId ?? ''}:${item.index}`,
         type: 'button',
         className: 'dcb-att',
         title: translate(t, 'openAttachment'),
-        onClick: () => onOpen(item.index),
+        onClick: () => onOpen(item),
       },
         h('span', { className: 'dcb-att-kind' }, item.kind === 'image' ? 'image' : 'file'),
         h('div', { className: 'dcb-att-main' },
           h('div', { className: 'dcb-att-name' }, item.name),
           h('div', { className: 'dcb-att-meta' },
             [item.mimeType, item.width ? `${item.width} × ${item.height}` : '', item.bytes ? `${formatTokens(item.bytes)}B` : ''].filter(Boolean).join(' · ')),
-          h('div', { className: 'dcb-att-path' }, item.path ?? `attachment:${item.attachmentId ?? ''}`)),
+          h('div', { className: 'dcb-att-path' }, shortAttachmentId(item))),
         h('span', { className: 'dcb-att-tk' }, formatTokens(Number(item.tokens ?? 0))))))
     }
 
@@ -770,7 +807,7 @@ const CSS = `
       if (detail.status === 'loading') return h('div', { className: 'dcb-loading' }, translate(t, 'loading'))
       if (detail.status === 'error') {
         return h('div', { className: 'dcb-error' },
-          `${translate(t, 'loadError')}: ${detail.error}`,
+          `${translate(t, 'loadError')}: ${errorText(t, detail.error)}`,
           h('button', { type: 'button', className: 'dcb-retry', onClick: onRetry }, translate(t, 'retry')))
       }
       const data = detail.data ?? {}
@@ -804,7 +841,7 @@ const CSS = `
       const [details, setDetails] = React.useState({})
       const requestRef = React.useRef({})
       const [pending, setPending] = React.useState({ seq: pendingCategory.seq, category: pendingCategory.value })
-      const [fileIndex, setFileIndex] = React.useState(null)
+      const [attachment, setAttachment] = React.useState(null)
       const view = contextView(pressure, detailed, basic)
 
       const load = async (category) => {
@@ -837,8 +874,8 @@ const CSS = `
         load(pending.category)
       }, [pending.seq])
 
-      if (fileIndex !== null) {
-        return h(FilePreview, { index: fileIndex, sessionId, t, onBack: () => setFileIndex(null) })
+      if (attachment !== null) {
+        return h(FilePreview, { attachment, sessionId, t, onBack: () => setAttachment(null) })
       }
 
       if (view === null) return null
@@ -887,7 +924,7 @@ const CSS = `
                 detail: details[row.key],
                 t,
                 onRetry: () => { delete requestRef.current[row.key]; load(row.key) },
-                onOpenAttachment: (index) => setFileIndex(index),
+                onOpenAttachment: (item) => setAttachment(item),
               })
               : null)))))
     }
@@ -916,27 +953,32 @@ const CSS = `
     }
 
     /** In-tab attachment preview (still inside the right Sidebar). */
-    function FilePreview({ index, sessionId, t, onBack }) {
+    function FilePreview({ attachment, sessionId, t, onBack }) {
       const [state, setState] = React.useState({ status: 'loading' })
+      const attachmentId = String(attachment?.attachmentId ?? '')
 
       React.useEffect(() => {
         let live = true
         setState({ status: 'loading' })
-        fetchJson(`/api/context-bar.file?sessionId=${encodeURIComponent(String(sessionId))}&index=${index}`)
+        if (attachmentId === '') {
+          setState({ status: 'error', error: 'bad-attachment-id' })
+          return () => { live = false }
+        }
+        fetchJson(attachmentFileUrl(sessionId, attachmentId))
           .then((data) => { if (live) setState({ status: 'ready', data }) })
           .catch((error) => { if (live) setState({ status: 'error', error: String(error?.message ?? error) }) })
         return () => { live = false }
-      }, [sessionId, index])
+      }, [sessionId, attachmentId])
 
       const body = state.status === 'loading'
         ? h('div', { className: 'dcb-loading' }, translate(t, 'loading'))
         : state.status === 'error'
-          ? h('div', { className: 'dcb-error' }, `${translate(t, 'loadError')}: ${state.error}`)
+          ? h('div', { className: 'dcb-error' }, `${translate(t, 'loadError')}: ${errorText(t, state.error)}`)
           : (() => {
             const data = state.data ?? {}
             return h('div', null,
               h('div', { className: 'dcb-file-head' },
-                h('div', { className: 'dcb-file-title' }, data.name ?? ''),
+                h('div', { className: 'dcb-file-title' }, data.name ?? attachment?.name ?? ''),
                 h('div', { className: 'dcb-file-meta' },
                   [data.mimeType, data.width ? `${data.width} × ${data.height}` : '', data.bytes ? `${formatTokens(data.bytes)}B` : ''].filter(Boolean).join(' · '))),
               h('div', { className: 'dcb-file-body' },
@@ -1078,6 +1120,8 @@ const CSS = `
       ContextSidebar,
       contextView,
       formatTokens,
+      attachmentFileUrl,
+      shortAttachmentId,
     }
   },
 })

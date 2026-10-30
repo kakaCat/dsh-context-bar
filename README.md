@@ -96,7 +96,7 @@ dsh plugin --profile <profile> remove dsh-context-bar
 - 只读当前 DSH profile 的本地会话日志（系统提示词、工具 schema、消息、附件、技能），**不写会话数据**。
 - **无 LLM 调用、无网络外发**；不采集遥测。
 - 内容通过同源本地路由 `/api/context-bar.ui` 与 `/api/context-bar.file` 按需读取，与 DSH 其他 Web 路由同一套鉴权。
-- 附件预览按 content-addressed `attachmentId` 读取 DSH 附件对象存储；仅当会话事件显式携带 `path` 时才会读取该路径（正常 DSH 附件块不带 `path`）。
+- 附件预览只按 content-addressed `attachmentId` 经 DSH `attachments` 服务读取对象存储；**不跟随**会话事件里的任何文件路径，也不遍历工作区文件；预览上限 12MB。
 - **本地可信边界**：能访问本机 DSH Web 的客户端可以按 `sessionId` 读取该 profile 的会话内容（与官方 `/export` 同级的信任模型），不要把 DSH Web 暴露到不可信网络。
 
 ## 兼容性
@@ -121,7 +121,7 @@ dsh plugin --profile <profile> remove dsh-context-bar
 
 ```sh
 node --check client.js && node --check index.js
-node --test        # 25 个单元测试
+node --test        # 42 个单元测试（投影、路由、内容抽取、客户端渲染）
 ```
 
 仓库结构：
