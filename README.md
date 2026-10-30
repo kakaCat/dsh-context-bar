@@ -9,6 +9,18 @@ DeepSeek Harness（DSH）插件：在输入框上方（与 Todo 同一个 dock �
 
 灵感来自 Claude Code 的 `/context` 面板；Claude Code 是 Anthropic 的产品，本插件与 Anthropic 官方无关。
 
+## 界面预览
+
+真机截图（DSH 0.2.1-rc.5，浅色主题）：
+
+| 折叠态 | 展开态 |
+|---|---|
+| ![折叠态：输入框上方的分段用量条](docs/screenshots/01-collapsed.png) | ![展开态：分类 tokens 与占比](docs/screenshots/02-expanded.png) |
+
+| 右侧栏：分类内容 | 右侧栏：附件预览 |
+|---|---|
+| ![系统工具按命名空间分组，展开可见完整 parameters](docs/screenshots/03-sidebar-tools.png) | ![在右侧栏内预览附件，可返回上下文](docs/screenshots/04-attachment-preview.png) |
+
 ## 特性
 
 - **折叠态**：一条细分段条 + `已用 N%` + `已用 / 窗口`，与输入框同宽。
