@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # 无第三方依赖、无构建：纯 JS 直接发源码，CI 只做语法与单元测试。
+      - name: Syntax check
+        run: node --check client.js && node --check index.js
+
+      - name: Test
+        run: node --test

@@ -1,0 +1,58 @@
+{
+  "name": "dsh-context-bar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Segmented model-context bar and context inspector for the DeepSeek Harness composer.",
+  "license": "MIT",
+  "author": "kakaCat <253834671@qq.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kakaCat/dsh-context-bar.git"
+  },
+  "homepage": "https://github.com/kakaCat/dsh-context-bar#readme",
+  "bugs": "https://github.com/kakaCat/dsh-context-bar/issues",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "cordis",
+    "plugin",
+    "context",
+    "context-window",
+    "token-meter"
+  ],
+  "engines": {
+    "node": ">=20",
+    "dsh": ">=0.2.1-rc.5 <0.3.0"
+  },
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check client.js && node --check index.js"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  }
+}

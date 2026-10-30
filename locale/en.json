@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Context Bar",
+    "description": "Shows the current model context window as message, attachment, system-tool, MCP-tool and system-prompt segments above the composer, with a detail inspector in the right sidebar."
+  }
+}
