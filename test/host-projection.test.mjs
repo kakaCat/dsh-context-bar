@@ -42,6 +42,8 @@ test('splits tool schemas into system and MCP buckets', () => {
   const view = def.wire.view(state)
   assert.ok(view.systemToolsTokens > 0)
   assert.ok(view.mcpToolsTokens > 0)
+  assert.equal(view.systemToolsCount, 1)
+  assert.equal(view.mcpToolsCount, 1)
   assert.equal(view.messageTokens, 0)
 })
 
@@ -95,7 +97,8 @@ test('wire view is a plain JSON object', () => {
   ])
   const view = def.wire.view(state)
   assert.deepEqual(Object.keys(view).sort(), [
-    'attachmentTokens', 'mcpToolsTokens', 'messageTokens', 'systemTokens', 'systemToolsTokens',
+    'attachmentTokens', 'mcpToolsCount', 'mcpToolsTokens', 'messageTokens',
+    'systemTokens', 'systemToolsCount', 'systemToolsTokens',
   ])
   for (const value of Object.values(view)) assert.equal(typeof value, 'number')
 })
@@ -104,7 +107,15 @@ const validState = () => ({
   systems: [{ seq: 1, tokens: 10 }],
   attachments: [{ seq: 2, tokens: 4 }],
   surfaceTokens: 14,
-  breakdown: { systemTokens: 10, systemToolsTokens: 0, mcpToolsTokens: 0, messageTokens: 4, attachmentTokens: 4 },
+  breakdown: {
+    systemTokens: 10,
+    systemToolsTokens: 0,
+    mcpToolsTokens: 0,
+    systemToolsCount: 0,
+    mcpToolsCount: 0,
+    messageTokens: 4,
+    attachmentTokens: 4,
+  },
 })
 
 test('state parser accepts a valid state and an armed claim', () => {
@@ -124,4 +135,5 @@ test('state parser rejects malformed claims and negative counters', () => {
   assert.throws(() => parse({ ...validState(), claim: { start: 1, end: 2, tokens: 3, systemSeqs: ['x'], seqs: [] } }))
   assert.throws(() => parse({ ...validState(), surfaceTokens: -1 }))
   assert.throws(() => parse({ ...validState(), breakdown: { ...validState().breakdown, messageTokens: -1 } }))
+  assert.throws(() => parse({ ...validState(), breakdown: { ...validState().breakdown, systemToolsCount: -1 } }))
 })

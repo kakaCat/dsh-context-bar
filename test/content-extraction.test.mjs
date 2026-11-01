@@ -4,6 +4,8 @@ import test from 'node:test'
 import {
   latestSystemPrompt,
   recentMessages,
+  messagePage,
+  messageTotal,
   toolContent,
   attachmentItems,
   messageText,
@@ -118,8 +120,93 @@ test('recent messages keep tool calls as structured arguments and name tool resu
     },
   ]
   const items = recentMessages(events)
+  assert.equal(items.length, 2)
+  assert.equal(items[0].role, 'assistant')
   assert.equal(items[0].text, 'checking')
-  assert.deepEqual(items[0].toolCalls, [{ id: 'c1', name: 'bash', arguments: '{"command":"ls"}' }])
+  assert.equal(items[0].toolCalls, undefined)
+  assert.equal(items[1].role, 'tool')
   assert.equal(items[1].toolName, 'bash')
+  assert.equal(items[1].toolArguments, '{"command":"ls"}')
   assert.equal(items[1].text, 'a.txt')
+})
+
+test('tool calls merge with their results into one tool row', () => {
+  const events = [
+    {
+      type: 'assistant/message',
+      seq: 1,
+      data: {
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'reasoning', text: 'need to list files' },
+            { type: 'tool-call', id: 'c1', name: 'bash', arguments: '{"command":"ls"}' },
+          ],
+        },
+      },
+    },
+    { type: 'tool/call', seq: 2, data: { callId: 'c1', name: 'bash', arguments: '{"command":"ls"}' } },
+    {
+      type: 'tool/result',
+      seq: 3,
+      data: { message: { role: 'tool', toolCallId: 'c1', content: [{ type: 'text', text: 'a.txt' }] } },
+    },
+  ]
+  const items = recentMessages(events)
+  assert.equal(items.length, 2)
+  assert.equal(items[0].role, 'assistant')
+  assert.equal(items[0].text, '')
+  assert.equal(items[0].reasoning, 'need to list files')
+  assert.equal(items[0].toolCalls, undefined)
+  assert.equal(items[1].role, 'tool')
+  assert.equal(items[1].toolName, 'bash')
+  assert.equal(items[1].toolArguments, '{"command":"ls"}')
+  assert.equal(items[1].text, 'a.txt')
+})
+
+test('message pages walk older entries without overlap', () => {
+  const events = Array.from({ length: 45 }, (_, index) => ({
+    type: 'user/message',
+    seq: index + 1,
+    data: { role: 'user', content: [{ type: 'text', text: `m${index + 1}` }] },
+  }))
+  assert.equal(messageTotal(events), 45)
+  const first = messagePage(events, { limit: 40 })
+  assert.equal(first.total, 45)
+  assert.equal(first.messages.length, 40)
+  assert.equal(first.hasMore, true)
+  assert.equal(first.nextBefore, 5)
+  assert.equal(first.messages[0].text, 'm6')
+  assert.equal(first.messages.at(-1).text, 'm45')
+
+  const older = messagePage(events, { limit: 40, before: first.nextBefore })
+  assert.equal(older.messages.length, 5)
+  assert.equal(older.hasMore, false)
+  assert.equal(older.nextBefore, 0)
+  assert.deepEqual(older.messages.map((message) => message.text), ['m1', 'm2', 'm3', 'm4', 'm5'])
+})
+
+test('tool rows expose status and duration', () => {
+  const call = { type: 'tool/call', seq: 1, time: 100, data: { callId: 'c1', name: 'bash', arguments: '{}' } }
+  const result = {
+    type: 'tool/result',
+    seq: 2,
+    time: 160,
+    data: { message: { role: 'tool', toolCallId: 'c1', content: [{ type: 'text', text: 'ok' }] } },
+  }
+  const ok = recentMessages([call, result])
+  assert.equal(ok.length, 1)
+  assert.equal(ok[0].status, 'ok')
+  assert.equal(ok[0].durationMs, 60)
+
+  const failed = recentMessages([call, {
+    ...result,
+    data: { message: { ...result.data.message, isError: true } },
+  }])
+  assert.equal(failed[0].status, 'error')
+
+  const pending = recentMessages([call])
+  assert.equal(pending.length, 1)
+  assert.equal(pending[0].status, 'pending')
+  assert.equal(pending[0].durationMs, undefined)
 })

@@ -28,10 +28,13 @@ DeepSeek Harness（DSH）插件：在输入框上方（与 Todo 同一个 dock �
 - **展开态**：点条形打开面板，列出「对话消息 / 文件附件 / 系统工具 / MCP 工具 / 系统提示」的 tokens 与占窗口百分比；点面板外或按 `Escape` 收起（焦点回到条形）。
 - **右侧 Sidebar 上下文检查器**：点分类打开 DSH 右侧栏「上下文」标签页，并按分类懒加载实际内容：
   - 系统提示词全文；
-  - 系统工具 / MCP 工具按命名空间、server 分组，展开可看完整 `parameters` schema；
-  - 对话消息（角色、tokens；tool-call 入参与 tool 结果折叠展示）；
-  - 文件附件：图片内联预览、文本内联展示、二进制显示元信息，标签页内可返回；
-  - 技能：技能摘要与全文。
+  - 系统工具 / MCP 工具按命名空间、server 分组，分类行与各分组头都显示工具个数，展开可看完整 `parameters` schema；
+  - 技能按技能包分组（如 `office` 技能包含 office-docx / office-pptx 等）；文件系统技能按作用域（自定义 / 项目 / 用户）分组，同样是分类行 + 分组头两层计数；技能分类行只显示个数、tokens 显示 `—`（避免与总占用重复计数），展开后每个技能仍显示自身 tokens；
+  - 对话消息（分类行显示总数；顶部可按 user / assistant / tool 多选、搜索已加载内容、全局搜索（消息搜全部历史并按角色筛选；系统提示 / 工具 schema / 技能搜当前状态；结果带类型与步骤，消息可展开全文，其它跳到对应分类；可按消息/系统/工具/技能过滤，筛选状态按 session 保留；结果支持 ↑/↓/Home/End + Enter，可分页加载更多）、只看错误、显示/隐藏推理、展开全部、单条复制；assistant 只放推理/文本，tool 按 callId 把一次调用的入参与输出合并成一行并显示成功/失败/进行中与耗时；默认分页 40 条，可加载更早）；
+  - 文件附件（分类行显示个数）：图片内联预览、文本内联展示、二进制显示元信息，标签页内可返回。
+  - 实时模式下每个展开分类都有「刷新」；对话消息在新事件静默后自动刷新，翻过更早页后暂停自动、保留手动刷新；附件 / 系统提示 / 工具 schema 在事件静默后低频静默刷新；技能目录按 15s 缓存、正文按 30s 缓存并低频刷新，仍可手动刷新。
+- **历史版本回看**：右侧 Sidebar 顶部可按轮次 / 步骤选择历史版本（可搜索弹层，按轮分组，压缩步有标记，滚动时只渲染可见行（500 步也不一次性铺开），打开时定位到当前步；支持 ↑/↓/Home/End 选择、Enter 跳转），默认落在最近一步；按该步的 cut 回放当时的系统提示、工具 schema、消息与附件，顶部用真实 `usage` 显示该步 prompt tokens，可「回到最新」或切回「实时」。历史接口失败时显示错误与重试，不再静默隐藏；开启「跟随最新」后新步骤自动切到最新（选旧步即停止）；选中步、标记步、跟随状态、展开的分类、消息筛选/搜索/展开状态以及侧栏滚动位置按 session 记住。技能目录没有历史，历史模式下标注「当前」。
+- **历史能力**：可对比上一步或标记步（分类 tokens / 条数、逐条消息增删/变更并可展开看行级 + 字符级 diff / 完整正文 / 推理 / 入参 / 输出（工具入参为 JSON 结构级 diff）、工具增删与同 schema 变更、系统提示词逐行 diff、附件变化、压缩），一键跳到最近一次压缩之前的那一步；diff 可复制、导出 Markdown 或 JSON；当前步可导出 JSON（含完整系统提示、工具 schema、消息与附件元数据）或 Markdown（可读摘要）。
 - **口径与 token-meter 一致**：Host 半投影 `contextBreakdownDetailed`，折叠与 token-meter 相同的 durable surface 事件；compaction 阴影价会被扣除并计入替换。
 - **降级安全**：Host 半不可用时，Client 回退到内置的 3 段 `contextBreakdown`（对话 / 系统提示 / 工具）；占用或窗口未知时整条隐藏。
 - **无 LLM 调用**：token 全部是本地固定密度估算；内容按需从本地会话日志读取。
@@ -52,11 +55,16 @@ DeepSeek Harness（DSH）插件：在输入框上方（与 Todo 同一个 dock �
 | 量 | 口径 |
 |---|---|
 | 100% | 当前解析到的模型路由的完整 `contextWindow` |
-| 总占用 | token-meter 投影的 `projectedTokens ?? pressureTokens` |
+| 总占用 | 实时：有 LLM 实际 `pressureTokens` 时用实际（标「实际」），否则用 `projectedTokens`（标「预估」）；历史：该步真实 `usage`（`input + cacheRead + cacheWrite`，标「实际」） |
 | 每行百分比 | `categoryTokens / contextWindow`，同一分母，不缩放 |
+| 分类分摊 | 分类原始估算按总占用比例分摊，分摊后分类之和等于总占用；hover 显示「原始估算 → 分摊后」；不再显示单独的「未归类 / 估算差额」段 |
+| 口径标注 | 以 LLM 实际 / token-meter 总量为准；实时有实际值标「实际」，否则标「预估」，点标签可在「实际 / 预估」间切换；历史标「实际」。分类 tokens 为本地启发式估算，按总量比例分摊 |
+| 历史版本 | 以 `step/start` 为锚点，回放到该步助手结算之前的 seq；步内 `request/header`、系统提示、工具结果与 compaction 都按事件顺序重放，compaction 阴影内容会被排除 |
+| 工具个数 | 最新 request envelope 中对应前缀的工具条数（`mcp__*` 归 MCP 工具，其余归系统工具），显示在右侧 Sidebar 的分类行与分组头 |
+| 消息 / 附件 / 技能个数 | 消息为全部展示项总数（列表分页加载），附件为最近 60 个，技能为 40 个；由 `/api/context-bar.ui?category=counts` 一次取回 |
 | 分类来源 | 本 bundle 的 Host 投影 `contextBreakdownDetailed`；系统提示词=最后一条非空存活 `system/message`；系统工具/ MCP 工具=最新 request envelope 的工具 schema（按 `mcp__` 前缀拆分）；文件附件=durable image/file 块的结构价；对话消息=其余可见消息文本 |
 
-所有 token 都是 DSH 固定密度启发式的**显示估算**（chars/4 + block overhead），不是账单数据。
+所有 token 都是 DSH 固定密度启发式的**显示估算**（chars/4 + block overhead），不是账单数据。总占用以 LLM 实际 usage / token-meter 为准，分类原始估算按总占用比例分摊，分类之和等于总占用；因此 bar 不显示额外的「未归类 / 估算差额」段。分摊后的分类 tokens 只表示占比，不是逐项真实 token。
 
 ## 安装
 
@@ -98,7 +106,7 @@ dsh plugin --profile <profile> remove dsh-context-bar
 | 系统提示词 | 最近一条非空 durable `system/message` | — |
 | 系统工具 | 最新 request envelope 中非 `mcp__*` 工具的名称、完整描述、`parameters` | — |
 | MCP 工具 | `mcp__<server>__<tool>` schema，按 server 分组 | — |
-| 对话消息 | 最近的 user / assistant / tool / developer 事件，正文截断 | 40 条、正文 6000 字符 |
+| 对话消息 | 分页展示（默认 40 条，可加载更早）：assistant 的推理/文本，tool（按 callId 合并入参与输出、状态与耗时），user / developer 消息 | 每页 40 条、正文 6000 字符 |
 | 文件附件 | durable image / file 块；按 `attachmentId` 从附件对象存储读取 | 60 个、预览 12MB |
 | 技能 | skills registry 的摘要与全文 | 40 个 |
 
@@ -134,7 +142,7 @@ dsh plugin --profile <profile> remove dsh-context-bar
 
 ```sh
 node --check client.js && node --check index.js
-node --test        # 42 个单元测试（投影、路由、内容抽取、客户端渲染）
+node --test        # 69 个单元测试（投影、路由、内容抽取、客户端渲染）
 ```
 
 仓库结构：
