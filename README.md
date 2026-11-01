@@ -18,9 +18,17 @@ DeepSeek Harness（DSH）插件：在输入框上方（与 Todo 同一个 dock �
 |---|---|
 | ![折叠态：输入框上方的分段用量条](docs/screenshots/01-collapsed.png) | ![展开态：分类 tokens 与占比](docs/screenshots/02-expanded.png) |
 
+| 分类计数与历史入口 | 消息筛选（角色 / 只看错误） |
+|---|---|
+| ![分类行与分组头显示条目数，顶部是该步真实 usage 与历史回看](docs/screenshots/05-sidebar-counts.png) | ![角色与错误筛选由 Host 在分页前生效，「全部 N」为未过滤总数](docs/screenshots/06-message-filters.png) |
+
 | 右侧栏：分类内容 | 右侧栏：附件预览 |
 |---|---|
 | ![系统工具按命名空间分组，展开可见完整 parameters](docs/screenshots/03-sidebar-tools.png) | ![在右侧栏内预览附件，可返回上下文](docs/screenshots/04-attachment-preview.png) |
+
+技能按提供它的技能包分组，分类行与分组头都显示个数：
+
+![技能按技能包分组并计数](docs/screenshots/07-skills.png)
 
 ## 特性
 
