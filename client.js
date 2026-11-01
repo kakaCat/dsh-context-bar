@@ -2165,7 +2165,11 @@ const CSS = `
             onClick: () => toggleGlobalKind(kind),
           }, translate(t, kind === 'message' ? 'searchKindMessage' : kind === 'system' ? 'searchKindSystem' : kind === 'tool' ? 'searchKindTool' : 'searchKindSkill')))),
         globalSearch.status === 'loading' ? h('div', { className: 'dcb-loading' }, translate(t, 'loading')) : null,
-        globalSearch.status === 'error' ? h('div', { className: 'dcb-loading' }, translate(t, 'globalSearchFailed')) : null,
+        globalSearch.status === 'error'
+          ? h('div', { className: 'dcb-loading', title: globalSearch.error }, globalSearch.error === undefined
+            ? translate(t, 'globalSearchFailed')
+            : `${translate(t, 'globalSearchFailed')} · ${globalSearch.error}`)
+          : null,
         globalSearch.status === 'ready'
           ? (globalSearch.data.results.length === 0
             ? h('div', { className: 'dcb-loading' }, translate(t, 'noGlobalResults'))
@@ -2252,7 +2256,7 @@ const CSS = `
               type: 'button',
               className: 'dcb-msg-toggle',
               disabled: query.trim() === '',
-              onClick: runGlobalSearch,
+              onClick: () => runGlobalSearch(),
             }, translate(t, 'globalSearch'))),
           globalSearch === null
             ? h('div', { className: 'dcb-msg-meta' },
