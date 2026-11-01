@@ -1,6 +1,7 @@
 # dsh-context-bar
 
 [![CI](https://github.com/kakaCat/dsh-context-bar/actions/workflows/ci.yml/badge.svg)](https://github.com/kakaCat/dsh-context-bar/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/kakaCat/dsh-context-bar)](https://github.com/kakaCat/dsh-context-bar/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![DSH](https://img.shields.io/badge/DSH-%E2%89%A50.2.1--rc.5-blue)](package.json)
 [![Node ≥ 20](https://img.shields.io/badge/node-%3E%3D%2020-339933)](package.json)
