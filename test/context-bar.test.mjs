@@ -358,6 +358,55 @@ test('message role filter hides only the three conversation roles', () => {
   assert.deepEqual(roles(new Set()), ['system'])
 })
 
+test('message view trusts host-filtered pages and falls back for a stale host', () => {
+  const mod = loadModule()
+  const messages = [
+    { role: 'user', text: 'u' },
+    { role: 'assistant', text: '' },
+    { role: 'tool', text: 'boom', isError: true },
+    { role: 'system', text: 's' },
+  ]
+  const base = { messages, query: '', showReasoning: true }
+
+  // New host: roles/errors were already applied before paging; do not re-filter.
+  const server = mod.messageView({
+    ...base,
+    total: 1,
+    allTotal: 9,
+    counts: { user: 5, assistant: 3, tool: 1, system: 0 },
+    filters: { roles: ['user'], errorsOnly: false },
+    visible: new Set(['user']),
+  })
+  assert.equal(server.shown.length, 4)
+  assert.equal(JSON.stringify(server.counts), JSON.stringify({ user: 5, assistant: 3, tool: 1, system: 0 }))
+  assert.equal(server.total, 1)
+  assert.equal(server.allTotal, 9)
+  assert.equal(server.hiddenAll, false)
+  assert.equal(server.emptyReason, null)
+
+  // Stale host: no filters echo, keep the local role/error filter.
+  const stale = mod.messageView({ ...base, visible: new Set(['user']) })
+  assert.deepEqual(stale.shown.map((message) => message.role), ['user', 'system'])
+  assert.equal(JSON.stringify(stale.counts), JSON.stringify({ user: 1, assistant: 1, tool: 1, system: 1 }))
+  const staleErrors = mod.messageView({ ...base, errorsOnly: true })
+  assert.deepEqual(staleErrors.shown.map((message) => message.role), ['tool'])
+
+  // Server-filtered empty page vs empty session vs hidden roles vs local search.
+  assert.equal(mod.messageView({ messages: [], total: 0, allTotal: 0 }).emptyReason, 'empty')
+  assert.equal(mod.messageView({ messages: [], total: 0, allTotal: 5, visible: new Set() }).emptyReason, 'allRolesHidden')
+  assert.equal(mod.messageView({ messages: [], total: 0, allTotal: 5 }).emptyReason, 'noFilteredMessages')
+  assert.equal(mod.messageView({ ...base, total: 1, allTotal: 1, query: 'zzz' }).emptyReason, 'noPageMatches')
+
+  // Hidden reasoning still drops assistant rows that only carry reasoning.
+  const reasoning = mod.messageView({
+    messages: [{ role: 'assistant', text: '', reasoning: 'why' }],
+    total: 1,
+    allTotal: 1,
+    showReasoning: false,
+  })
+  assert.equal(reasoning.shown.length, 0)
+})
+
 test('skills group by their providing package, filesystem skills by scope', () => {
   const mod = loadModule()
   // A provider that ships several skills stays one package.

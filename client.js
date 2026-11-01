@@ -174,6 +174,9 @@ const LOCALES = {
     characters: '约 {count} 字符',
     filterByRole: '按角色筛选',
     noFilteredMessages: '当前筛选下没有消息',
+    noPageMatches: '本页没有匹配',
+    noPageMatchesHint: '可加载更早，或用全局搜索查全部历史',
+    allCount: '全部 {total}',
     allRolesHidden: '已隐藏全部角色',
     showAllRoles: '恢复全部角色',
     roles: { user: 'user', assistant: 'assistant', tool: 'tool', system: 'system' },
@@ -330,6 +333,9 @@ const LOCALES = {
     characters: '~{count} chars',
     filterByRole: 'Filter by role',
     noFilteredMessages: 'No messages match this filter',
+    noPageMatches: 'No matches on this page',
+    noPageMatchesHint: 'Load earlier pages, or search the full history',
+    allCount: 'All {total}',
     allRolesHidden: 'All roles are hidden',
     showAllRoles: 'Show all roles',
     roles: { user: 'user', assistant: 'assistant', tool: 'tool', system: 'system' },
@@ -892,6 +898,7 @@ const CSS = `
 .dcb-loading { padding: 10px 0; font-size: 11px; color: var(--dsw-alias-label-tertiary, #7d8590); }
 .dcb-msg-hidden { display: flex; align-items: center; justify-content: center; gap: 8px; }
 .dcb-msg-hidden .dcb-msg-more { margin-left: 0; }
+.dcb-msg-hint { font-size: 10px; color: var(--dsw-alias-label-tertiary, #7d8590); }
 .dcb-error { padding: 6px 0; font-size: 11px; color: var(--dsw-alias-state-error-primary, #dc2626); }
 .dcb-retry {
   margin-left: 8px;
@@ -1915,6 +1922,7 @@ const CSS = `
     }
 
     /** Keep selected roles; roles outside the selector (system) stay visible. */
+    /** Role filter mirroring the host rule: only the three chat roles are filtered. */
     function filterMessages(messages, visible) {
       return messages.filter((message) => {
         const role = String(message.role ?? 'user')
@@ -1922,11 +1930,61 @@ const CSS = `
       })
     }
 
+    /**
+     * Pure message-list view-model: the Host filters roles/errors before paging
+     * and reports whole-session counts; `filters === undefined` means an older
+     * Host returned an unfiltered page, so keep the client-side fallback.
+     */
+    function messageView({
+      messages = [],
+      total,
+      allTotal,
+      counts,
+      filters,
+      visible = new Set(MESSAGE_FILTER_ROLES),
+      errorsOnly = false,
+      query = '',
+      showReasoning = true,
+    }) {
+      const base = showReasoning
+        ? messages
+        : messages.filter((message) => message.role !== 'assistant' || message.text !== '')
+      const resolvedCounts = counts ?? (() => {
+        const fallback = {}
+        for (const message of base) {
+          const role = String(message.role ?? 'user')
+          fallback[role] = (fallback[role] ?? 0) + 1
+        }
+        return fallback
+      })()
+      const filtered = filters === undefined
+        ? filterMessages(base, visible).filter((message) => !errorsOnly || (message.role === 'tool' && message.isError === true))
+        : base
+      const needle = query.trim().toLowerCase()
+      const shown = filtered.filter((message) => needle === '' || messageMatches(message, needle))
+      const hiddenAll = MESSAGE_FILTER_ROLES.every((role) => !visible.has(role))
+      const resolvedTotal = Number.isFinite(Number(total)) ? Number(total) : messages.length
+      const resolvedAll = Number.isFinite(Number(allTotal)) ? Number(allTotal) : resolvedTotal
+      let emptyReason = null
+      if (shown.length === 0) {
+        emptyReason = resolvedAll === 0
+          ? 'empty'
+          : hiddenAll
+            ? 'allRolesHidden'
+            : needle !== ''
+              ? 'noPageMatches'
+              : 'noFilteredMessages'
+      }
+      return { shown, counts: resolvedCounts, total: resolvedTotal, allTotal: resolvedAll, hiddenAll, emptyReason }
+    }
+
     /** Message log with role/search/state filters and paged history. */
-    function MessageLog({ data, t, onLoadMore, loadingMore, sessionId, onJumpToStep, onOpenCategory }) {
+    function MessageLog({ data, t, onLoadMore, loadingMore, sessionId, onJumpToStep, onOpenCategory, onReload }) {
       const messages = data.messages ?? []
-      const total = Number.isFinite(Number(data.total)) ? Number(data.total) : messages.length
       const hasMore = data.hasMore === true && typeof onLoadMore === 'function'
+      const reload = (roles, onlyErrors) => {
+        if (typeof onReload === 'function') onReload({ roles: [...roles], errorsOnly: onlyErrors })
+      }
       const storedView = recallMessageView(sessionId)
       const storedRoles = Array.isArray(storedView?.visible)
         ? storedView.visible.filter((role) => MESSAGE_FILTER_ROLES.includes(role))
@@ -1966,34 +2024,42 @@ const CSS = `
         const row = globalListRef.current.querySelector(`[data-result-index="${globalActive}"]`)
         if (row !== null) row.scrollIntoView({ block: 'nearest' })
       }, [globalActive, globalSearch?.status])
-      if (messages.length === 0) return h('div', { className: 'dcb-loading' }, translate(t, 'empty'))
-      const base = showReasoning
-        ? messages
-        : messages.filter((message) => message.role !== 'assistant' || message.text !== '')
-      const counts = {}
-      for (const message of base) {
-        const role = String(message.role ?? 'user')
-        counts[role] = (counts[role] ?? 0) + 1
-      }
-      const needle = query.trim().toLowerCase()
-      const shown = filterMessages(base, visible).filter((message) => {
-        if (errorsOnly && !(message.role === 'tool' && message.isError === true)) return false
-        return needle === '' || messageMatches(message, needle)
+      const { shown, counts, total, allTotal, hiddenAll, emptyReason } = messageView({
+        messages,
+        total: data.total,
+        allTotal: data.allTotal,
+        counts: data.counts,
+        filters: data.filters,
+        visible,
+        errorsOnly,
+        query,
+        showReasoning,
       })
-      const hiddenAll = MESSAGE_FILTER_ROLES.every((role) => !visible.has(role))
+      const needle = query.trim().toLowerCase()
       const toggle = (role) => {
         const next = new Set(visible)
         if (next.has(role)) next.delete(role)
         else next.add(role)
         setVisible(next)
+        reload(next, errorsOnly)
         if (globalSearch !== null) {
           setGlobalDetail(null)
           runGlobalSearch(next)
         }
       }
+      const toggleErrorsOnly = () => {
+        const next = !errorsOnly
+        setErrorsOnly(next)
+        reload(visible, next)
+        if (globalSearch !== null) {
+          setGlobalDetail(null)
+          runGlobalSearch(visible)
+        }
+      }
       const showAllRoles = () => {
         const next = new Set(MESSAGE_FILTER_ROLES)
         setVisible(next)
+        reload(next, errorsOnly)
         if (globalSearch !== null) {
           setGlobalDetail(null)
           runGlobalSearch(next)
@@ -2244,7 +2310,7 @@ const CSS = `
                 globalSearchTokenRef.current += 1
               },
             }),
-            toggleButton(errorsOnly, translate(t, 'onlyErrors'), () => setErrorsOnly((value) => !value)),
+            toggleButton(errorsOnly, translate(t, 'onlyErrors'), toggleErrorsOnly),
             toggleButton(showReasoning, translate(t, 'showReasoning'), () => setShowReasoning((value) => !value)),
             h('button', {
               type: 'button',
@@ -2261,6 +2327,7 @@ const CSS = `
           globalSearch === null
             ? h('div', { className: 'dcb-msg-meta' },
               h('span', null, translate(t, 'loadedCount', { loaded: messages.length, total })),
+              allTotal !== total ? h('span', null, translate(t, 'allCount', { total: allTotal })) : null,
               needle === '' ? null : h('span', null, translate(t, 'matchCount', { count: shown.length })),
               hasMore
                 ? h('button', {
@@ -2274,9 +2341,12 @@ const CSS = `
         globalSearch === null
           ? (shown.length === 0
             ? h('div', { className: 'dcb-loading dcb-msg-hidden' },
-              translate(t, hiddenAll ? 'allRolesHidden' : 'noFilteredMessages'),
-              hiddenAll
+              translate(t, emptyReason),
+              hiddenAll && allTotal > 0
                 ? h('button', { type: 'button', className: 'dcb-msg-more', onClick: showAllRoles }, translate(t, 'showAllRoles'))
+                : null,
+              !hiddenAll && needle !== '' && hasMore
+                ? h('span', { className: 'dcb-msg-hint' }, translate(t, 'noPageMatchesHint'))
                 : null)
             : h('div', { className: 'dcb-log' }, shown.map((message, index) => h(MessageEntry, {
               key: message.id ?? index,
@@ -2499,7 +2569,7 @@ const CSS = `
         h('pre', { className: 'dcb-raw' }, text))
     }
 
-    function CategoryContent({ category, detail, t, onRetry, onOpenAttachment, onLoadMore, loadingMore, sessionId, onJumpToStep, onOpenCategory }) {
+    function CategoryContent({ category, detail, t, onRetry, onOpenAttachment, onLoadMore, loadingMore, sessionId, onJumpToStep, onOpenCategory, onReload }) {
       if (detail === undefined) return null
       if (detail.status === 'loading') return h('div', { className: 'dcb-loading' }, translate(t, 'loading'))
       if (detail.status === 'error') {
@@ -2508,7 +2578,7 @@ const CSS = `
           h('button', { type: 'button', className: 'dcb-retry', onClick: onRetry }, translate(t, 'retry')))
       }
       const data = detail.data ?? {}
-      if (category === 'messages') return h(MessageLog, { data, t, onLoadMore, loadingMore, sessionId, onJumpToStep, onOpenCategory })
+      if (category === 'messages') return h(MessageLog, { data, t, onLoadMore, loadingMore, sessionId, onJumpToStep, onOpenCategory, onReload })
       if (category === 'attachments') return h(AttachmentList, { data, t, onOpen: onOpenAttachment })
       if (category === 'systemTools' || category === 'mcpTools') return h(ToolGroups, { data, t })
       if (category === 'skills') return h(SkillList, { data, t })
@@ -2633,6 +2703,12 @@ const CSS = `
       const historicalReady = historical && snapshot?.status === 'ready'
       const view = historicalReady ? snapshotView(snapshot.data, liveView?.window) : liveView
 
+      const messageFilters = (override) => {
+        const stored = recallMessageView(sessionId)
+        const roles = override?.roles ?? stored?.visible ?? MESSAGE_FILTER_ROLES
+        const errorsOnly = override?.errorsOnly ?? stored?.errorsOnly === true
+        return { roles, errorsOnly }
+      }
       const load = async (category, options = {}) => {
         if (sessionId === undefined || sessionId === null) {
           setDetails((current) => ({ ...current, [category]: { status: 'error', error: 'no-session' } }))
@@ -2643,8 +2719,12 @@ const CSS = `
         requestRef.current[category] = next
         const keep = options.silent === true && details[category]?.status === 'ready'
         if (!keep) setDetails((current) => ({ ...current, [category]: { status: 'loading' } }))
+        const filters = category === 'messages' ? messageFilters(options.filters) : null
+        const params = filters === null
+          ? undefined
+          : { roles: filters.roles.join(','), errors: filters.errorsOnly ? '1' : '0' }
         try {
-          const body = await fetchJson(categoryUrl(sessionId, category, at))
+          const body = await fetchJson(categoryUrl(sessionId, category, at, params))
           if (requestRef.current[category] !== next) return
           setDetails((current) => ({ ...current, [category]: { status: 'ready', data: body } }))
         } catch (error) {
@@ -2653,6 +2733,7 @@ const CSS = `
         }
       }
 
+      const reloadMessages = (filters) => load('messages', { silent: true, filters })
       const loadMoreMessages = async () => {
         const detail = details.messages
         if (sessionId === undefined || sessionId === null || loadingMore) return
@@ -2664,7 +2745,17 @@ const CSS = `
         setLoadingMore(true)
         try {
           const at = typeof selection === 'number' ? selection : undefined
-          const body = await fetchJson(categoryUrl(sessionId, 'messages', at, { before: cursor, limit: 40 }))
+          const filters = detail.data?.filters ?? null
+          const effective = messageFilters(filters === null ? undefined : {
+            roles: filters.roles ?? undefined,
+            errorsOnly: filters.errorsOnly,
+          })
+          const body = await fetchJson(categoryUrl(sessionId, 'messages', at, {
+            before: cursor,
+            limit: 40,
+            roles: effective.roles.join(','),
+            errors: effective.errorsOnly ? '1' : '0',
+          }))
           if (requestRef.current.messagesMore !== token) return
           setDetails((current) => {
             const previous = current.messages
@@ -3580,6 +3671,7 @@ const CSS = `
                   onRetry: () => { delete requestRef.current[row.key]; load(row.key) },
                   onOpenAttachment: (item) => setAttachment(item),
                   onLoadMore: row.key === 'messages' ? loadMoreMessages : undefined,
+                  onReload: row.key === 'messages' ? reloadMessages : undefined,
                   loadingMore,
                   sessionId,
                   onJumpToStep: (value) => setSelection(value),
@@ -3799,6 +3891,7 @@ const CSS = `
       jsonDiff,
       lineDiff,
       filterMessages,
+      messageView,
       skillPackageGroup,
       attachmentFileUrl,
       shortAttachmentId,

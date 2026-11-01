@@ -238,6 +238,55 @@ test('messages category pages older rows and counts the whole list', async () =>
   assert.equal((await json(await route.fetch(request(route.path, 's1', { category: 'messages', before: 'x' })))).status, 400)
 })
 
+test('messages category filters by role and errors before paging', async () => {
+  const events = [
+    userText(1, 'u1'),
+    userText(2, 'u2'),
+    userText(3, 'u3'),
+    assistantReply(4, 10),
+    assistantReply(5, 11),
+    { type: 'tool/call', seq: 6, data: { callId: 'c1', name: 'bash', arguments: '{}' } },
+    {
+      type: 'tool/result',
+      seq: 7,
+      data: { message: { role: 'tool', toolCallId: 'c1', isError: true, content: [{ type: 'text', text: 'boom' }] } },
+    },
+    userText(8, 'u4'),
+  ]
+  const route = harness({ sessions: new Map([['s1', sessionOf(events)]] ) }).get('/api/context-bar.ui')
+
+  const users = await json(await route.fetch(request(route.path, 's1', { category: 'messages', roles: 'user', limit: '2' })))
+  assert.equal(users.status, 200)
+  assert.equal(users.body.total, 4)
+  assert.equal(users.body.allTotal, 7)
+  assert.equal(users.body.messages.length, 2)
+  assert.deepEqual(users.body.messages.map((message) => message.text), ['u3', 'u4'])
+  assert.equal(users.body.hasMore, true)
+  assert.equal(users.body.nextBefore, 2)
+  assert.deepEqual(users.body.filters, { roles: ['user'], errorsOnly: false })
+  assert.deepEqual(users.body.counts, { user: 4, assistant: 2, tool: 1, system: 0 })
+
+  const olderUsers = await json(await route.fetch(request(route.path, 's1', {
+    category: 'messages', roles: 'user', limit: '2', before: '2',
+  })))
+  assert.deepEqual(olderUsers.body.messages.map((message) => message.text), ['u1', 'u2'])
+  assert.equal(olderUsers.body.hasMore, false)
+
+  const errors = await json(await route.fetch(request(route.path, 's1', { category: 'messages', errors: '1' })))
+  assert.equal(errors.body.total, 1)
+  assert.equal(errors.body.messages[0].role, 'tool')
+  assert.equal(errors.body.messages[0].isError, true)
+
+  const noErrorUsers = await json(await route.fetch(request(route.path, 's1', {
+    category: 'messages', roles: 'user,assistant', errors: '1',
+  })))
+  assert.equal(noErrorUsers.body.total, 0)
+  assert.equal(noErrorUsers.body.messages.length, 0)
+
+  assert.equal((await json(await route.fetch(request(route.path, 's1', { category: 'messages', roles: 'nobody' })))).status, 400)
+  assert.equal((await json(await route.fetch(request(route.path, 's1', { category: 'messages', errors: 'yes' })))).status, 400)
+})
+
 test('diff and export summarize a step against the previous one', async () => {
   const events = [
     stepStart(1, 1, 1),

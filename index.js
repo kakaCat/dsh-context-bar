@@ -376,6 +376,21 @@ function buildMessageEntries(events) {
   return items
 }
 
+/** Roles the sidebar exposes as filters; `system` rows are never hidden by them. */
+const MESSAGE_FILTER_ROLES = new Set(['user', 'assistant', 'tool'])
+
+/**
+ * Apply the sidebar filters before paging, so a role/error filter searches the
+ * whole session instead of only the page that happens to be loaded.
+ */
+function filterMessageEntries(entries, roles, errorsOnly) {
+  return entries.filter((entry) => {
+    if (roles !== undefined && MESSAGE_FILTER_ROLES.has(entry.role) && !roles.has(entry.role)) return false
+    if (errorsOnly === true && !(entry.role === 'tool' && entry.isError === true)) return false
+    return true
+  })
+}
+
 /** Last `limit` entries ending at `before` (an entry index), plus page metadata. */
 export function messagePage(events, options = {}) {
   const requested = Math.floor(Number(options.limit))
@@ -383,14 +398,23 @@ export function messagePage(events, options = {}) {
     ? Math.min(requested, MESSAGE_PAGE_MAX)
     : MESSAGE_PAGE_DEFAULT
   const entries = buildMessageEntries(events)
+  const counts = { user: 0, assistant: 0, tool: 0, system: 0 }
+  for (const entry of entries) counts[entry.role] = (counts[entry.role] ?? 0) + 1
+  const roles = options.roles instanceof Set
+    ? options.roles
+    : Array.isArray(options.roles) ? new Set(options.roles) : undefined
+  const filtered = filterMessageEntries(entries, roles, options.errorsOnly === true)
   const requestedBefore = Math.floor(Number(options.before))
   const before = options.before === undefined || !Number.isFinite(requestedBefore)
-    ? entries.length
-    : Math.max(0, Math.min(requestedBefore, entries.length))
+    ? filtered.length
+    : Math.max(0, Math.min(requestedBefore, filtered.length))
   const start = Math.max(0, before - limit)
   return {
-    messages: entries.slice(start, before),
-    total: entries.length,
+    messages: filtered.slice(start, before),
+    total: filtered.length,
+    allTotal: entries.length,
+    counts,
+    filters: { roles: roles === undefined ? null : [...roles], errorsOnly: options.errorsOnly === true },
     hasMore: start > 0,
     nextBefore: start,
   }
@@ -1151,7 +1175,31 @@ function contextRoute(getSession, getSkills) {
           return jsonResponse({ ok: true, category, kind: 'text', text: latestSystemPrompt(until) })
         }
         if (category === 'messages') {
-          return jsonResponse({ ok: true, category, kind: 'messages', ...messagePage(until, { limit, before }) })
+          const rolesParam = url.searchParams.get('roles')
+          let roles
+          if (rolesParam !== null) {
+            const items = rolesParam === ''
+              ? []
+              : rolesParam.split(',').map((role) => role.trim()).filter((role) => role !== '')
+            if (items.some((role) => !MESSAGE_FILTER_ROLES.has(role))) {
+              return jsonResponse({ ok: false, error: 'bad-roles' }, 400)
+            }
+            roles = new Set(items)
+          }
+          const errorsParam = url.searchParams.get('errors')
+          let errorsOnly = false
+          if (errorsParam !== null) {
+            if (errorsParam !== '0' && errorsParam !== '1') {
+              return jsonResponse({ ok: false, error: 'bad-errors' }, 400)
+            }
+            errorsOnly = errorsParam === '1'
+          }
+          return jsonResponse({
+            ok: true,
+            category,
+            kind: 'messages',
+            ...messagePage(until, { limit, before, roles, errorsOnly }),
+          })
         }
         if (category === 'attachments') {
           return jsonResponse({ ok: true, category, kind: 'attachments', attachments: attachmentItems(until) })
